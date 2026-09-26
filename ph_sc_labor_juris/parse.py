@@ -36,9 +36,10 @@ ELIB_MONTHS = (
     "Dec",
 )
 
+# Later Lawphil months add a PDF column and extra spaces in the row tag.
 _LAWPHIL_ROW = re.compile(
-    r"<tr class=\"xy\">\s*<td>\s*<a href=\"([^\"]+)\">([^<]+)</a>\s*<br\s*/?>\s*"
-    r"([^<]+)</td>\s*<td>(.*?)</td>\s*</tr>",
+    r"<tr\s+class=\"xy\">\s*<td>\s*<a\s+href=\"([^\"]+)\"[^>]*>\s*([^<]+)</a>\s*<br\s*/?>\s*"
+    r"(.*?)</td>\s*<td>(.*?)</td>(?:\s*<td\b[^>]*>.*?</td>)*\s*</tr>",
     re.I | re.S,
 )
 _ELIB_ITEM = re.compile(
@@ -60,6 +61,12 @@ _BLOCK_END = re.compile(r"</(?:p|div|h\d|tr|li)>", re.I)
 _SPACE = re.compile(r"[ \t]+\n")
 _BLANK = re.compile(r"\n{3,}")
 _SPACES = re.compile(r"[ \t]{2,}")
+_HEAD = re.compile(r"<head\b[^>]*>.*?</head>", re.I | re.S)
+_BLOCKQUOTE = re.compile(r"<blockquote\b[^>]*>(.*)</blockquote>", re.I | re.S)
+_DECISION_MARK = re.compile(
+    r"D\s*E\s*C\s*I\s*S\s*I\s*O\s*N|R\s*E\s*S\s*O\s*L\s*U\s*T\s*I\s*O\s*N",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -133,11 +140,27 @@ def parse_elib_index(page_html: str) -> list[Listing]:
     return listings
 
 
+def _decision_fragment(page_html: str) -> str:
+    """Return the HTML that holds the opinion.
+
+    Lawphil wraps the whole decision in one blockquote. The E-Library printer
+    page puts the opinion in the body and uses blockquote only for quotations,
+    so the dispositive word already appears before the first quotation.
+    """
+    match = _BLOCKQUOTE.search(page_html)
+    if not match or len(match.group(1)) < 400:
+        return page_html
+    before = _HEAD.sub(" ", page_html[: match.start()])
+    before = _SCRIPT.sub(" ", before)
+    before = _STYLE.sub(" ", before)
+    before_text = _TAG.sub(" ", before)
+    if _DECISION_MARK.search(before_text):
+        return page_html
+    return match.group(1)
+
+
 def html_to_text(page_html: str) -> str:
-    body = page_html
-    quote = re.search(r"<blockquote\b[^>]*>(.*)</blockquote>", page_html, re.I | re.S)
-    if quote:
-        body = quote.group(1)
+    body = _HEAD.sub(" ", _decision_fragment(page_html))
     body = _SCRIPT.sub(" ", body)
     body = _STYLE.sub(" ", body)
     body = _CITE.sub(" ", body)
@@ -146,13 +169,15 @@ def html_to_text(page_html: str) -> str:
     body = _BLOCK_END.sub("\n\n", body)
     text = _TAG.sub(" ", body)
     text = html.unescape(text).replace("\xa0", " ")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = _SPACE.sub("\n", text)
     text = _SPACES.sub(" ", text)
     text = _BLANK.sub("\n\n", text)
     text = text.strip()
-    footer = text.find("The Lawphil Project")
-    if footer > 0:
-        text = text[:footer].strip()
+    for marker in ("The Lawphil Project", "Source: Supreme Court E-Library"):
+        footer = text.find(marker)
+        if footer > 0:
+            text = text[:footer].strip()
     return text
 
 

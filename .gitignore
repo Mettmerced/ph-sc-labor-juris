@@ -9,4 +9,5 @@ venv/
 .env
 *.sqlite
 *.sqlite3
+*.json.tmp
 .DS_Store

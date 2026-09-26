@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import date
+from pathlib import Path
 
+from ph_sc_labor_juris.corpus import CorpusWriter
 from ph_sc_labor_juris.docket import gr_key, is_gr
 from ph_sc_labor_juris.http_client import FetchError, HttpClient
 from ph_sc_labor_juris.labor import classify, title_is_candidate
@@ -24,6 +26,9 @@ from ph_sc_labor_juris.store import (
     save_decision,
     upsert_listing,
 )
+
+# E-Library monthly lists are empty before about 1996. Lawphil covers 1990 onward.
+ELIB_FIRST_YEAR = 1996
 
 
 def _year_of(decided_on: str, fallback: int) -> int:
@@ -125,10 +130,14 @@ def fetch_decisions(
     *,
     titles_only: bool,
     limit: int | None,
+    writer: CorpusWriter | None = None,
+    stop_at: int | None = None,
 ) -> int:
     rows = pending_cases(connection, None if titles_only else limit)
     fetched = 0
     for row in rows:
+        if stop_at is not None and writer is not None and writer.count >= stop_at:
+            break
         if titles_only and not title_is_candidate(row["title"]):
             # Leave it pending so a later full run can still read the decision.
             continue
@@ -153,8 +162,89 @@ def fetch_decisions(
             is_labor,
             reason,
         )
+        if is_labor and text and writer is not None:
+            writer.add(
+                {
+                    "gr_key": row["gr_key"],
+                    "docket": row["docket"],
+                    "title": row["title"],
+                    "decided_on": row["decided_on"] or "",
+                    "year": int(row["year"]),
+                    "url": url,
+                    "source": row["source"],
+                    "text": text,
+                }
+            )
+        connection.commit()
         fetched += 1
         label = "labor" if is_labor else "not labor"
-        print(f"    {label}: {reason}")
-        connection.commit()
+        saved = f"  [{writer.count} labor files]" if writer is not None else ""
+        print(f"    {label}: {reason}{saved}")
+    return fetched
+
+
+def collect(
+    connection: sqlite3.Connection,
+    client: HttpClient,
+    *,
+    start_year: int,
+    end_year: int,
+    only_month: int | None,
+    refresh: bool,
+    titles_only: bool,
+    limit: int | None,
+    cases_dir: Path | str | None = None,
+    stop_at: int | None = None,
+) -> int:
+    """List each month, then download pending decisions before moving on.
+
+    Listing both sources before the download prefers the E-Library text when
+    the same G.R. number appears on both sites. A saved JSON file and the
+    sqlite catalog let a later run continue after an interruption.
+    """
+    writer = CorpusWriter(cases_dir) if cases_dir is not None else None
+    if writer is not None and stop_at is not None and writer.count >= stop_at:
+        print(f"Already have {writer.count} labor decisions.")
+        return 0
+    today = date.today()
+    fetched = 0
+    for year in range(start_year, end_year + 1):
+        months = [only_month] if only_month else range(1, 13)
+        for month in months:
+            if (year, month) > (today.year, today.month):
+                return fetched
+            closed = (year, month) < (today.year, today.month)
+            print(f"{year}-{month:02d}")
+            _collect_source(
+                connection,
+                client,
+                source="lawphil",
+                year=year,
+                month=month,
+                refresh=refresh or not closed,
+            )
+            if year >= ELIB_FIRST_YEAR:
+                _collect_source(
+                    connection,
+                    client,
+                    source="elibrary",
+                    year=year,
+                    month=month,
+                    refresh=refresh or not closed,
+                )
+            connection.commit()
+            remaining = None if limit is None else limit - fetched
+            fetched += fetch_decisions(
+                connection,
+                client,
+                titles_only=titles_only,
+                limit=remaining,
+                writer=writer,
+                stop_at=stop_at,
+            )
+            if limit is not None and fetched >= limit:
+                return fetched
+            if stop_at is not None and writer is not None and writer.count >= stop_at:
+                print(f"Stopped at {writer.count} labor decisions.")
+                return fetched
     return fetched

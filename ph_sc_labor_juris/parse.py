@@ -48,9 +48,12 @@ _ELIB_ITEM = re.compile(
     re.I | re.S,
 )
 _TAG = re.compile(r"<[^>]+>")
+_HEAD = re.compile(r"<head\b[^>]*>.*?</head>", re.I | re.S)
 _SCRIPT = re.compile(r"<script\b[^>]*>.*?</script>", re.I | re.S)
 _STYLE = re.compile(r"<style\b[^>]*>.*?</style>", re.I | re.S)
 _CITE = re.compile(r"<cite\b[^>]*>.*?</cite>", re.I | re.S)
+_DOCKET_AT = re.compile(r"G\.?\s*R\.?\s*(?:Nos?\.?)?\s*(?:L\s*-\s*)?\d+", re.I)
+_BLOCKQUOTE = re.compile(r"<blockquote\b", re.I)
 _REDACTION = re.compile(
     r"<span\b[^>]*background-color:\s*black[^>]*>\s*</span>",
     re.I | re.S,
@@ -133,11 +136,30 @@ def parse_elib_index(page_html: str) -> list[Listing]:
     return listings
 
 
+def _decision_html(page_html: str) -> str:
+    """Return the decision markup, without a site wrapper.
+
+    Lawphil puts the whole decision in one blockquote that opens with the
+    G.R. number. E-Library pages quote other cases inside blockquotes, so
+    those inner quotations are left in the full document.
+    """
+    match = re.search(r"<blockquote\b[^>]*>(.*)</blockquote>", page_html, re.I | re.S)
+    if not match:
+        return page_html
+    inner = match.group(1)
+    compact = re.sub(r"\s+", " ", _TAG.sub(" ", inner)).strip()
+    docket = _DOCKET_AT.search(compact)
+    if docket is None or docket.start() > 250:
+        return page_html
+    openings = len(_BLOCKQUOTE.findall(page_html))
+    if openings == 1 or len(inner) > len(page_html) * 0.45:
+        return inner
+    return page_html
+
+
 def html_to_text(page_html: str) -> str:
-    body = page_html
-    quote = re.search(r"<blockquote\b[^>]*>(.*)</blockquote>", page_html, re.I | re.S)
-    if quote:
-        body = quote.group(1)
+    body = _decision_html(page_html)
+    body = _HEAD.sub(" ", body)
     body = _SCRIPT.sub(" ", body)
     body = _STYLE.sub(" ", body)
     body = _CITE.sub(" ", body)
@@ -146,13 +168,19 @@ def html_to_text(page_html: str) -> str:
     body = _BLOCK_END.sub("\n\n", body)
     text = _TAG.sub(" ", body)
     text = html.unescape(text).replace("\xa0", " ")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = _SPACE.sub("\n", text)
     text = _SPACES.sub(" ", text)
     text = _BLANK.sub("\n\n", text)
     text = text.strip()
-    footer = text.find("The Lawphil Project")
-    if footer > 0:
-        text = text[:footer].strip()
+    for marker in (
+        "The Lawphil Project",
+        "Source: Supreme Court E-Library",
+        "This page was dynamically generated",
+    ):
+        footer = text.find(marker)
+        if footer > 0:
+            text = text[:footer].strip()
     return text
 
 

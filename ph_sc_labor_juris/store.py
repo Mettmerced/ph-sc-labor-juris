@@ -136,6 +136,40 @@ def pending_cases(connection: sqlite3.Connection, limit: int | None) -> list[sql
     return list(connection.execute(sql))
 
 
+def replace_case(
+    connection: sqlite3.Connection,
+    *,
+    gr_key: str,
+    docket: str,
+    title: str,
+    decided_on: str,
+    year: int,
+    url: str,
+    source: str,
+    text: str,
+) -> None:
+    """Insert or replace a kept labor decision from a case file."""
+    connection.execute(
+        """
+        INSERT INTO cases (
+            gr_key, docket, title, decided_on, year, url, source, text, is_labor, reason, checked
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'case file', 1)
+        ON CONFLICT(gr_key) DO UPDATE SET
+            docket = excluded.docket,
+            title = excluded.title,
+            decided_on = excluded.decided_on,
+            year = excluded.year,
+            url = excluded.url,
+            source = excluded.source,
+            text = excluded.text,
+            is_labor = 1,
+            reason = 'case file',
+            checked = 1
+        """,
+        (gr_key, docket, title, decided_on, year, url, source, text),
+    )
+
+
 def save_decision(
     connection: sqlite3.Connection,
     gr_key: str,

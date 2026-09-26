@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from ph_sc_labor_juris.chunk import chunk_text
+from ph_sc_labor_juris.corpus import CaseCorpus, load_case_files
 from ph_sc_labor_juris.docket import gr_key
+from ph_sc_labor_juris.http_client import decode_html
 from ph_sc_labor_juris.index import build_index, search
 from ph_sc_labor_juris.labor import classify, title_is_candidate
 from ph_sc_labor_juris.parse import (
@@ -75,6 +78,24 @@ class ParseTests(unittest.TestCase):
         self.assertNotIn("Lawphil", text)
         self.assertNotIn("watermark", text)
 
+    def test_inner_blockquote_does_not_replace_the_decision(self):
+        page = """<html><head><title>Printer Friendly</title></head><body>
+        <h2>[ G.R. No. 112096, January 30, 1996 ]</h2>
+        <h3>D E C I S I O N</h3>
+        <p>The employee was illegally dismissed by the company after a POEA case.</p>
+        <blockquote>A short quotation about wages in an earlier case.</blockquote>
+        <blockquote>Another quotation that is not the whole decision.</blockquote>
+        <p>The petition is granted.</p>
+        <p>Source: Supreme Court E-Library</p>
+        </body></html>"""
+        text = html_to_text(page)
+        self.assertIn("illegally dismissed", text)
+        self.assertIn("petition is granted", text)
+        self.assertIn("G.R. No. 112096", text)
+        self.assertIn("short quotation", text)
+        self.assertNotIn("Printer Friendly", text)
+        self.assertNotIn("Supreme Court E-Library", text)
+
 
 class SearchTests(unittest.TestCase):
     def test_search_returns_the_labor_passage(self):
@@ -105,6 +126,53 @@ class SearchTests(unittest.TestCase):
             self.assertTrue(rows)
             self.assertEqual(rows[0]["gr_key"], "GR-72654")
             self.assertIn("illegally dismissed", rows[0]["text"])
+            connection.close()
+
+
+class DecodeTests(unittest.TestCase):
+    def test_lawphil_is_cp1252_even_when_the_header_disagrees(self):
+        raw = bytes([0x96])
+        text = decode_html(raw, "iso-8859-1", url="https://lawphil.net/judjuris/juri1990/jan1990/jan1990.html")
+        self.assertEqual(text, "\u2013")
+
+    def test_elibrary_is_utf8(self):
+        raw = "ñ".encode("utf-8")
+        text = decode_html(raw, "iso-8859-1", url="https://elibrary.judiciary.gov.ph/thebookshelf/showdocsfriendly/1/1")
+        self.assertEqual(text, "ñ")
+
+
+class CorpusTests(unittest.TestCase):
+    def test_index_loads_case_json_without_the_full_text_in_the_manifest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            corpus = CaseCorpus(root / "cases")
+            corpus.write(
+                {
+                    "gr_key": "GR-72654",
+                    "docket": "G.R. Nos. 72654-61",
+                    "title": "Alipio R. Ruga vs. National Labor Relations Commission",
+                    "decided_on": "January 22, 1990",
+                    "year": 1990,
+                    "url": "https://example.test/ruga",
+                    "source": "lawphil",
+                    "text": (
+                        "The Court held that the fishermen-crew were employees and were illegally dismissed. "
+                        "The right-of-control test showed that the boat owner directed the fishing operations."
+                    ),
+                }
+            )
+            manifest = json.loads((root / "cases" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["count"], 1)
+            self.assertNotIn("text", manifest["cases"][0])
+            saved = json.loads((root / "cases" / "1990" / "GR-72654.json").read_text(encoding="utf-8"))
+            self.assertIn("illegally dismissed", saved["text"])
+
+            connection = connect(root / "corpus.sqlite")
+            self.assertEqual(load_case_files(connection, root / "cases"), 1)
+            self.assertGreater(build_index(connection), 0)
+            rows = search(connection, "Were the fishermen employees or partners in a joint venture?")
+            self.assertTrue(rows)
+            self.assertEqual(rows[0]["gr_key"], "GR-72654")
             connection.close()
 
 

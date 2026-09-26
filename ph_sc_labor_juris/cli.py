@@ -8,7 +8,8 @@ from datetime import date
 from pathlib import Path
 
 from ph_sc_labor_juris.ask import format_passages, generate_answer
-from ph_sc_labor_juris.collect import collect_lists, fetch_decisions
+from ph_sc_labor_juris.collect import run_collection
+from ph_sc_labor_juris.corpus import case_file_count, load_case_files
 from ph_sc_labor_juris.http_client import HttpClient
 from ph_sc_labor_juris.index import build_index, search
 from ph_sc_labor_juris.store import connect, counts
@@ -39,13 +40,23 @@ def main(argv: list[str] | None = None) -> int:
         default="data/corpus.sqlite",
         help="SQLite file for the catalog and search index (default: data/corpus.sqlite)",
     )
+    parser.add_argument(
+        "--cases-dir",
+        default="cases",
+        help="Directory of kept decision JSON files (default: cases)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     collect = sub.add_parser("collect", help="Download and classify labor decisions")
     collect.add_argument("--start-year", type=int, default=1990)
     collect.add_argument("--end-year", type=int, default=date.today().year)
     collect.add_argument("--month", type=int, choices=range(1, 13))
-    collect.add_argument("--delay", type=float, default=1.5, help="Seconds between requests")
+    collect.add_argument(
+        "--delay",
+        type=float,
+        default=0.8,
+        help="Seconds between requests (default: 0.8)",
+    )
     collect.add_argument(
         "--titles-only",
         action="store_true",
@@ -60,6 +71,11 @@ def main(argv: list[str] | None = None) -> int:
         "--refresh",
         action="store_true",
         help="Re-read monthly index pages that were already saved",
+    )
+    collect.add_argument(
+        "--labor-target",
+        type=int,
+        help="Stop after this many labor decisions are stored as JSON files",
     )
 
     sub.add_parser("index", help="Build the search index from saved labor decisions")
@@ -79,26 +95,26 @@ def main(argv: list[str] | None = None) -> int:
                 f"Listing G.R. decisions from {args.start_year} to {args.end_year} "
                 f"(pause {args.delay:.1f}s between requests)"
             )
-            collect_lists(
+            mode = "title candidates only" if args.titles_only else "every listed G.R. decision"
+            print(f"Reading decisions ({mode})")
+            fetched = run_collection(
                 connection,
                 client,
                 start_year=args.start_year,
                 end_year=args.end_year,
                 only_month=args.month,
                 refresh=args.refresh,
-            )
-            mode = "title candidates only" if args.titles_only else "every listed G.R. decision"
-            print(f"Reading decisions ({mode})")
-            fetched = fetch_decisions(
-                connection,
-                client,
                 titles_only=args.titles_only,
                 limit=args.limit,
+                cases_dir=Path(args.cases_dir),
+                labor_target=args.labor_target,
             )
             print(f"Downloaded {fetched} decisions.")
-            _print_counts(connection)
+            _print_counts(connection, Path(args.cases_dir))
             return 0
         if args.command == "index":
+            loaded = load_case_files(connection, Path(args.cases_dir))
+            print(f"Loaded {loaded} decisions from {args.cases_dir}.")
             written = build_index(connection)
             print(f"Indexed {written} passages.")
             return 0
@@ -124,17 +140,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(format_passages(rows))
             return 0
         if args.command == "status":
-            _print_counts(connection)
+            _print_counts(connection, Path(args.cases_dir))
             return 0
     finally:
         connection.close()
     return 2
 
 
-def _print_counts(connection) -> None:
+def _print_counts(connection, cases_dir: Path) -> None:
     stats = counts(connection)
     print(
         f"Listed {stats['listed']} | checked {stats['checked']} | "
         f"labor {stats['labor']} | pending {stats['pending']} | "
-        f"indexed passages {stats['chunks']}"
+        f"indexed passages {stats['chunks']} | case files {case_file_count(cases_dir)}"
     )

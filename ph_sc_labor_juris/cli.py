@@ -8,7 +8,8 @@ from datetime import date
 from pathlib import Path
 
 from ph_sc_labor_juris.ask import format_passages, generate_answer
-from ph_sc_labor_juris.collect import collect_lists, fetch_decisions
+from ph_sc_labor_juris.collect import collect as collect_decisions
+from ph_sc_labor_juris.corpus import import_case_files
 from ph_sc_labor_juris.http_client import HttpClient
 from ph_sc_labor_juris.index import build_index, search
 from ph_sc_labor_juris.store import connect, counts
@@ -39,13 +40,23 @@ def main(argv: list[str] | None = None) -> int:
         default="data/corpus.sqlite",
         help="SQLite file for the catalog and search index (default: data/corpus.sqlite)",
     )
+    parser.add_argument(
+        "--cases-dir",
+        default="cases",
+        help="Directory of labor decision JSON files (default: cases)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     collect = sub.add_parser("collect", help="Download and classify labor decisions")
     collect.add_argument("--start-year", type=int, default=1990)
     collect.add_argument("--end-year", type=int, default=date.today().year)
     collect.add_argument("--month", type=int, choices=range(1, 13))
-    collect.add_argument("--delay", type=float, default=1.5, help="Seconds between requests")
+    collect.add_argument(
+        "--delay",
+        type=float,
+        default=0.8,
+        help="Seconds between requests (default: 0.8)",
+    )
     collect.add_argument(
         "--titles-only",
         action="store_true",
@@ -55,6 +66,11 @@ def main(argv: list[str] | None = None) -> int:
         "--limit",
         type=int,
         help="Stop after this many newly downloaded decisions",
+    )
+    collect.add_argument(
+        "--stop-at",
+        type=int,
+        help="Stop after this many labor decisions have been saved as JSON files",
     )
     collect.add_argument(
         "--refresh",
@@ -79,26 +95,26 @@ def main(argv: list[str] | None = None) -> int:
                 f"Listing G.R. decisions from {args.start_year} to {args.end_year} "
                 f"(pause {args.delay:.1f}s between requests)"
             )
-            collect_lists(
+            mode = "title candidates only" if args.titles_only else "every listed G.R. decision"
+            print(f"Reading decisions ({mode})")
+            fetched = collect_decisions(
                 connection,
                 client,
                 start_year=args.start_year,
                 end_year=args.end_year,
                 only_month=args.month,
                 refresh=args.refresh,
-            )
-            mode = "title candidates only" if args.titles_only else "every listed G.R. decision"
-            print(f"Reading decisions ({mode})")
-            fetched = fetch_decisions(
-                connection,
-                client,
                 titles_only=args.titles_only,
                 limit=args.limit,
+                cases_dir=args.cases_dir,
+                stop_at=args.stop_at,
             )
             print(f"Downloaded {fetched} decisions.")
             _print_counts(connection)
             return 0
         if args.command == "index":
+            loaded = import_case_files(connection, args.cases_dir)
+            print(f"Loaded {loaded} decisions from {args.cases_dir}.")
             written = build_index(connection)
             print(f"Indexed {written} passages.")
             return 0

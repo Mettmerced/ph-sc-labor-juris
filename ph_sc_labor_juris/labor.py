@@ -16,6 +16,7 @@ _STRONG_TITLE = re.compile(
     r"sec\.?\s+of labor|"
     r"ministry of labor|"
     r"\bpoea\b|"
+    r"\bdole\b|"
     r"illegal dismissal|"
     r"unfair labor"
     r")",

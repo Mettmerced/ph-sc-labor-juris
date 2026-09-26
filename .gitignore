@@ -1,0 +1,12 @@
+data/
+_probe/
+_sample_month.html
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env
+*.sqlite
+*.sqlite3
+.DS_Store

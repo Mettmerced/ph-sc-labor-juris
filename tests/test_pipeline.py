@@ -10,7 +10,7 @@ from pathlib import Path
 from ph_sc_labor_juris.chunk import chunk_text
 from ph_sc_labor_juris.corpus import CaseCorpus, load_case_files
 from ph_sc_labor_juris.docket import gr_key
-from ph_sc_labor_juris.http_client import decode_html
+from ph_sc_labor_juris.http_client import FetchError, HttpClient, decode_html
 from ph_sc_labor_juris.index import build_index, search
 from ph_sc_labor_juris.labor import classify, title_is_candidate
 from ph_sc_labor_juris.parse import (
@@ -63,6 +63,28 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(rows[1].docket, "G.R. Nos. 72654-61")
         self.assertIn("National Labor Relations Commission", rows[1].title)
         self.assertTrue(rows[1].url.endswith("gr_72654_1990.html"))
+
+    def test_lawphil_index_accepts_the_later_row_shapes(self):
+        page = """<html><body><table>
+        <tr valign="top" bgcolor="#fbedfa">
+        <td><a href="gr_160753_2004.html">G.R. No. 160753</a><br />September 30, 2004</td>
+        <td>Jimmy L. Barnes <a class="vs">vs.</a> National Labor Relations Commission</td>
+        </tr>
+        <tr class="xy"><td> <a href="gr_193047_2014.html">G.R. No. 193047</a> <br />March 3, 2014</a> </td><td> Fil-Pride Shipping Company, Inc. <a class=vs>vs</a> Edgar A. Balasta </td><td> <a href="pdf/gr_193047_2014.pdf"><img src="p.png"></a></td></tr>
+        <tr class="xy"><td> <a href="ac_6705_2006.html">A.C. No. 6705</a> <br />March 31, 2006 </td><td> Ruthie Lim-Santiago <a class="vs">vs.</a> Atty. Carlos B. Sagucio</td>
+        <tr class="xy" class="xy"><td><a href="gr_192393_2019.html">G.R. No. 192393</a><br />March 27, 2019 </td><td> Fil-Estate Management, Inc. <a class=vs>vs.</a> Republic of the Philippines<br /><a class=vs>Concurring Opinion</a></td></tr>
+        </table></body></html>"""
+        rows = parse_lawphil_index(page, "https://lawphil.net/judjuris/juri2004/sep2004/sep2004.html")
+        self.assertEqual([row.docket for row in rows], [
+            "G.R. No. 160753",
+            "G.R. No. 193047",
+            "A.C. No. 6705",
+            "G.R. No. 192393",
+        ])
+        self.assertEqual(rows[0].decided_on, "September 30, 2004")
+        self.assertIn("National Labor Relations Commission", rows[0].title)
+        self.assertNotIn("Concurring", rows[3].title)
+        self.assertTrue(rows[1].url.endswith("gr_193047_2014.html"))
 
     def test_elibrary_index(self):
         page = (FIXTURES / "elib_index.html").read_text(encoding="utf-8")
@@ -127,6 +149,20 @@ class SearchTests(unittest.TestCase):
             self.assertEqual(rows[0]["gr_key"], "GR-72654")
             self.assertIn("illegally dismissed", rows[0]["text"])
             connection.close()
+
+
+class HttpClientTests(unittest.TestCase):
+    def test_read_timeout_is_a_fetch_error(self):
+        from unittest.mock import patch
+
+        client = HttpClient(delay=0, timeout=1)
+        with patch("ph_sc_labor_juris.http_client.time.sleep"), patch(
+            "ph_sc_labor_juris.http_client.urllib.request.urlopen",
+            side_effect=TimeoutError("timed out"),
+        ):
+            with self.assertRaises(FetchError) as raised:
+                client.get("https://elibrary.judiciary.gov.ph/thebookshelf/showdocsfriendly/1/1")
+        self.assertIn("timed out", str(raised.exception))
 
 
 class DecodeTests(unittest.TestCase):

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import signal
+import socket
 import ssl
 import time
 import urllib.error
@@ -22,6 +24,14 @@ class FetchError(Exception):
         super().__init__(message)
         self.url = url
         self.status = status
+
+
+class _HardTimeout(Exception):
+    """Raised from SIGALRM when a read ignores the socket timeout."""
+
+
+def _on_hard_timeout(signum, frame):
+    raise _HardTimeout("timed out")
 
 
 def decode_html(raw: bytes, charset: str | None, *, url: str = "") -> str:
@@ -56,7 +66,7 @@ def ssl_context() -> ssl.SSLContext:
 
 
 class HttpClient:
-    def __init__(self, delay: float = 0.8, timeout: float = 60.0):
+    def __init__(self, delay: float = 0.8, timeout: float = 90.0):
         self.delay = delay
         self.timeout = timeout
         self._last_request = 0.0
@@ -69,30 +79,46 @@ class HttpClient:
             headers={"User-Agent": USER_AGENT, "Accept": "text/html"},
         )
         last_error: Exception | None = None
+        # urlopen's timeout is not always applied to the SSL read.
+        socket.setdefaulttimeout(self.timeout)
         for attempt in range(3):
+            previous = signal.signal(signal.SIGALRM, _on_hard_timeout)
+            signal.alarm(max(1, int(self.timeout)))
+            retry = False
             try:
-                with urllib.request.urlopen(request, timeout=self.timeout, context=self._ssl) as response:
-                    raw = response.read()
-                    charset = response.headers.get_content_charset()
-                self._last_request = time.time()
-                return decode_html(raw, charset, url=url)
-            except urllib.error.HTTPError as error:
-                self._last_request = time.time()
-                if error.code == 404:
-                    raise FetchError(url, f"HTTP 404 for {url}", status=404) from error
-                last_error = error
-                if error.code in (429, 500, 502, 503, 504) and attempt < 2:
-                    time.sleep(2 ** (attempt + 1))
-                    continue
-                raise FetchError(
-                    url, f"HTTP {error.code} for {url}", status=error.code
-                ) from error
-            except urllib.error.URLError as error:
-                last_error = error
-                if attempt < 2:
-                    time.sleep(2 ** (attempt + 1))
-                    continue
-                raise FetchError(url, f"Could not fetch {url}: {error.reason}") from error
+                try:
+                    with urllib.request.urlopen(request, timeout=self.timeout, context=self._ssl) as response:
+                        raw = response.read()
+                        charset = response.headers.get_content_charset()
+                    self._last_request = time.time()
+                    return decode_html(raw, charset, url=url)
+                except urllib.error.HTTPError as error:
+                    self._last_request = time.time()
+                    if error.code == 404:
+                        raise FetchError(url, f"HTTP 404 for {url}", status=404) from error
+                    last_error = error
+                    retry = error.code in (429, 500, 502, 503, 504) and attempt < 2
+                    if not retry:
+                        raise FetchError(
+                            url, f"HTTP {error.code} for {url}", status=error.code
+                        ) from error
+                except urllib.error.URLError as error:
+                    last_error = error
+                    retry = attempt < 2
+                    if not retry:
+                        raise FetchError(url, f"Could not fetch {url}: {error.reason}") from error
+                except (TimeoutError, _HardTimeout, OSError) as error:
+                    # urlopen lets a read timeout surface as TimeoutError, not URLError.
+                    self._last_request = time.time()
+                    last_error = error
+                    retry = attempt < 2
+                    if not retry:
+                        raise FetchError(url, f"Could not fetch {url}: {error}") from error
+            finally:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, previous)
+            if retry:
+                time.sleep(2 ** (attempt + 1))
         raise FetchError(url, f"Could not fetch {url}: {last_error}")
 
     def _pause(self) -> None:

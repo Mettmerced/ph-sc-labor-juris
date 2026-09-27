@@ -36,9 +36,13 @@ ELIB_MONTHS = (
     "Dec",
 )
 
+# Lawphil's monthly tables are not one shape. Some rows omit </tr>, some
+# repeat the docket link after the date, and older months use valign
+# instead of class="xy".
 _LAWPHIL_ROW = re.compile(
-    r"<tr class=\"xy\">\s*<td>\s*<a href=\"([^\"]+)\">([^<]+)</a>\s*<br\s*/?>\s*"
-    r"([^<]+)</td>\s*<td>(.*?)</td>\s*</tr>",
+    r"<tr\b[^>]*>\s*<td\b[^>]*>\s*<a\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>"
+    r"\s*([^<]+)</a>\s*<br\s*/?>\s*([^<]*?)\s*(?:</a>)?\s*</td>\s*"
+    r"<td\b[^>]*>(.*?)</td>",
     re.I | re.S,
 )
 _ELIB_ITEM = re.compile(
@@ -103,6 +107,7 @@ def parse_lawphil_index(page_html: str, page_url: str) -> list[Listing]:
     listings: list[Listing] = []
     for match in _LAWPHIL_ROW.finditer(page_html):
         href, docket, decided_on, title_html = match.groups()
+        title_html = _BREAK.split(title_html, maxsplit=1)[0]
         listings.append(
             Listing(
                 docket=_clean_fragment(docket),
